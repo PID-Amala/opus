@@ -394,7 +394,11 @@ class ClaudeLLM:
 
             if not tool_calls:
 
-                return response.content[0].text
+                text_blocks = [block.text for block in response.content if block.type == "text"]
+                if not text_blocks:
+                    print(f"[Claude] Empty/non-text response, stop_reason={response.stop_reason}")
+                    return "Sorry, I couldn't process that - could you rephrase or try again?"
+                return "".join(text_blocks)
 
 
 

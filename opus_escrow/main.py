@@ -3,6 +3,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Query
 from pydantic import BaseModel
 import re
+from fastapi.responses import JSONResponse
+from opus_escrow.integrations import nomba
+from opus_escrow.repositories.transactions import get_transaction_by_ref, mark_funds_held
 
 from opus_escrow.integrations.telegram import send_telegram_message
 from opus_escrow.repositories.users import (
@@ -236,3 +239,60 @@ async def telegram_webhook(request: Request):
     return {"ok": True}
 
 
+from fastapi.responses import JSONResponse
+from opus_escrow.integrations import nomba
+from opus_escrow.repositories.transactions import get_transaction_by_ref, mark_funds_held
+
+
+@app.post("/webhook/nomba")
+async def nomba_webhook(request: Request):
+    body = await request.json()
+    timestamp = request.headers.get(settings.nomba_webhook_timestamp_header)
+    signature = request.headers.get(settings.nomba_webhook_signature_header)
+
+    # TEMP: log the full raw payload + headers on every hit until you've
+    # confirmed the real field/header names against a live test webhook.
+    print(f"[Nomba webhook] headers={dict(request.headers)}")
+    print(f"[Nomba webhook] body={body}")
+
+    if not timestamp or not signature:
+        print("[Nomba webhook] missing signature/timestamp header - check header names in config")
+        return JSONResponse(status_code=400, content={"status": "error", "reason": "missing signature headers"})
+
+    try:
+        valid = nomba.verify_webhook_signature(body, timestamp, signature)
+    except ValueError as exc:
+        print(f"[Nomba webhook] payload missing expected field: {exc}")
+        return JSONResponse(status_code=400, content={"status": "error"})
+
+    if not valid:
+        print("[Nomba webhook] INVALID SIGNATURE - rejecting, possible spoofed request")
+        return JSONResponse(status_code=401, content={"status": "error", "reason": "invalid signature"})
+
+    if body.get("event_type") != "vact_transfer":
+        return {"status": "ignored", "reason": "not a virtual account deposit event"}
+
+    transaction_data = body.get("data", {}).get("transaction", {})
+    # UNCONFIRMED field name - verify against a real payload, adjust if wrong
+    account_ref = transaction_data.get("aliasAccountNumber")
+
+    if not account_ref:
+        print(f"[Nomba webhook] couldn't find account ref in payload: {transaction_data}")
+        return JSONResponse(status_code=400, content={"status": "error"})
+
+    txn = await get_transaction_by_ref(account_ref)
+    if not txn:
+        print(f"[Nomba webhook] no transaction found for ref {account_ref}")
+        return JSONResponse(status_code=404, content={"status": "error"})
+
+    if txn["status"] != "awaiting_payment":
+        print(f"[Nomba webhook] transaction {account_ref} status={txn['status']}, ignoring (duplicate/late webhook)")
+        return {"status": "ignored"}
+
+    await mark_funds_held(
+        txn["_id"],
+        nomba_reference=transaction_data.get("transactionId", "unknown"),
+        webhook_payload=body,
+    )
+    print(f"[Nomba webhook] confirmed payment for {account_ref}")
+    return {"status": "success"}
