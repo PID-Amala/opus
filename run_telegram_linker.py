@@ -18,9 +18,13 @@ import httpx
 from opus_escrow.db.client import close_client
 from opus_escrow.integrations.telegram import get_updates, send_telegram_message
 from opus_escrow.repositories.users import get_user_by_telegram_chat_id, link_telegram_chat_id
+from opus_escrow.config import get_settings
+
+settings = get_settings()
+
 
 PHONE_PATTERN = re.compile(r"^\+?\d{10,15}$")
-CHAT_ENDPOINT = "http://127.0.0.1:8000/chat"  # your local FastAPI server
+CHAT_ENDPOINT = settings.chat_endpoint_url  # your local FastAPI server
 
 
 async def forward_to_chat(session_id: str, message: str) -> str:
@@ -51,25 +55,25 @@ async def main() -> None:
 
             linked_user = await get_user_by_telegram_chat_id(chat_id)
 
-            if PHONE_PATTERN.match(text):
-                cleaned = text.lstrip("+")
-                await link_telegram_chat_id(cleaned, chat_id)
-                await send_telegram_message(chat_id, f"Linked! You can now chat normally as {cleaned}.")
-                print(f"Linked {cleaned} -> chat_id {chat_id}")
-                continue
-
             if not linked_user:
-                await send_telegram_message(chat_id, "Send me your phone number first to link this chat.")
+                if PHONE_PATTERN.match(text):
+                    cleaned = text.lstrip("+")
+                    await link_telegram_chat_id(cleaned, chat_id)
+                    await send_telegram_message(chat_id, f"Linked! You can now chat normally as {cleaned}.")
+                    print(f"Linked {cleaned} -> chat_id {chat_id}")
+                else:
+                    await send_telegram_message(chat_id, "Send me your phone number first to link this chat.")
                 continue
 
-            # Linked - forward to the real chat/AI backend
+            # Already linked - forward everything to the AI, including
+            # numeric messages like a BVN, which would otherwise look
+            # like a phone number to the regex above.
             try:
                 reply = await forward_to_chat(linked_user["whatsapp_number"], text)
                 await send_telegram_message(chat_id, reply)
             except Exception as exc:
                 print(f"[chat forward error] {exc}")
                 await send_telegram_message(chat_id, "Something went wrong processing that - try again.")
-
 
 if __name__ == "__main__":
     try:

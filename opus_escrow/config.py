@@ -19,9 +19,13 @@ class Settings(BaseSettings):
     nomba_webhook_signature_header: str = "signature"  # unconfirmed - see integrations/nomba.py
     nomba_webhook_timestamp_header: str = "timestamp"  # unconfirmed - see integrations/nomba.py
     prembly_secret_key: Optional[str] = None  # test or live secret key from Prembly dashboard
-    gemini_api_key: Optional[str] = None
+    gemini_api_key_1: Optional[str] = None
+    gemini_api_key_2: Optional[str] = None
+    gemini_api_key_3: Optional[str] = None
+    gemini_api_key_4: Optional[str] = None
     whatsapp_verify_token: Optional[str] =None
     telegram_bot_token: Optional[str] = None
+    chat_endpoint_url: str = "http://127.0.0.1:8000/chat"
 
     # DEV ONLY: bypasses the real verification API with a fake success
     # result, so onboarding can be tested before the verification API

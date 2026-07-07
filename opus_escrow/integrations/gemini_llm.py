@@ -26,7 +26,37 @@ from opus_escrow.repositories.transactions import (
 
 settings = get_settings()
 
-API_KEY = settings.gemini_api_key
+class GeminiKeyRotator:
+    """
+    Rotates across up to 4 Gemini API keys when one hits its quota limit
+    (e.g. free-tier 20 requests/day). Shared module-level state, so
+    exhausting a key affects all future calls across every session, not
+    just the one that hit the limit.
+    """
+
+    def __init__(self):
+        self.keys = [
+            k for k in [
+                settings.gemini_api_key_1,
+                settings.gemini_api_key_2,
+                settings.gemini_api_key_3,
+                settings.gemini_api_key_4,
+            ] if k
+        ]
+        if not self.keys:
+            raise ValueError("No Gemini API keys configured - set at least GEMINI_API_KEY_1 in .env")
+        self.index = 0
+
+    def current_key(self) -> str:
+        return self.keys[self.index]
+
+    def rotate(self) -> str:
+        self.index = (self.index + 1) % len(self.keys)
+        print(f"[Gemini] Quota hit - rotating to API key #{self.index + 1}/{len(self.keys)}")
+        return self.current_key()
+
+
+_key_rotator = GeminiKeyRotator()
 MODEL_ID = "gemini-2.5-flash"
 
 import httpx # Make sure this is imported at the top
@@ -209,11 +239,11 @@ FUNCTION_MAP = {
 # ==============================================================================
 class GeminiLLM:
     def __init__(self):
-        # We use .aio for full async support
-        self.client = genai.Client(api_key=API_KEY)
-        
+        self._build_client_and_chat()
+
+    def _build_client_and_chat(self) -> None:
+        self.client = genai.Client(api_key=_key_rotator.current_key())
         tool = types.Tool(function_declarations=FUNCTION_DECLARATIONS)
-        
         self.chat = self.client.aio.chats.create(
             model=MODEL_ID,
             config=types.GenerateContentConfig(
@@ -242,37 +272,46 @@ class GeminiLLM:
         )
 
     async def _resolve_ref_to_id(self, ref: str) -> ObjectId:
-        """Bridges the gap between user-facing Refs and DB ObjectIds."""
         tx = await get_transaction_by_ref(ref)
         if not tx:
             raise ValueError(f"Transaction reference {ref} not found.")
         return tx["_id"]
 
-    async def send(self, message: str) -> str:
-        # Initial send
-        response = await self.chat.send_message(message)
+    def _is_quota_error(self, exc: Exception) -> bool:
+        return "RESOURCE_EXHAUSTED" in str(exc) or "429" in str(exc)
 
-        # Loop to handle recursive function calling (Gemini calls tools -> we give result -> Gemini calls more tools)
+    async def send(self, message: str) -> str:
+        try:
+            response = await self.chat.send_message(message)
+        except Exception as exc:
+            if self._is_quota_error(exc):
+                _key_rotator.rotate()
+                self._build_client_and_chat()  # fresh chat - see note on lost history
+                response = await self.chat.send_message(message)
+            else:
+                raise
+
         while True:
-            # Look for function calls in the current response
             function_calls = [part.function_call for part in response.candidates[0].content.parts if part.function_call]
-            
+
             if not function_calls:
                 return response.text
 
             tool_responses = []
             for fc in function_calls:
                 result = await self._execute_function(fc.name, fc.args)
-                
-                tool_responses.append(
-                    types.Part.from_function_response(
-                        name=fc.name,
-                        response=result
-                    )
-                )
+                tool_responses.append(types.Part.from_function_response(name=fc.name, response=result))
 
-            # Send the results of the function back to the model
-            response = await self.chat.send_message(tool_responses)
+            try:
+                response = await self.chat.send_message(tool_responses)
+            except Exception as exc:
+                if self._is_quota_error(exc):
+                    _key_rotator.rotate()
+                    self._build_client_and_chat()
+                    # tool_responses can't be replayed into a fresh chat with no
+                    # matching function_call turn - ask the user to repeat instead
+                    return "I hit a temporary limit mid-response - please repeat your last message."
+                raise
 
     async def _execute_function(self, name: str, fc_args: Any) -> Dict[str, Any]:
         print(f"\n[TOOL CALL] {name}({fc_args})")
