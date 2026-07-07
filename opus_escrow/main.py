@@ -14,7 +14,7 @@ from opus_escrow.db.client import close_client, get_client, get_database
 from opus_escrow.integrations.gemini_llm import GeminiLLM
 from opus_escrow.integrations.whatsapp import send_whatsapp_message
 from opus_escrow.config import get_settings
-
+from opus_escrow.integrations.claude_llm import ClaudeLLM
 settings = get_settings()
 
 
@@ -37,12 +37,12 @@ async def root():
 # WhatsApp -> keyed by phone number
 # Telegram -> keyed by linked WhatsApp number
 # Chat API -> keyed by session_id
-sessions: dict[str, GeminiLLM] = {}
+sessions: dict[str, ClaudeLLM] = {}
 
 
 async def chat_with_ai(session_id: str, message: str) -> str:
     if session_id not in sessions:
-        sessions[session_id] = GeminiLLM()
+        sessions[session_id] = ClaudeLLM()
 
     ai_session = sessions[session_id]
     return await ai_session.send(message)
@@ -234,3 +234,5 @@ async def telegram_webhook(request: Request):
 
 
     return {"ok": True}
+
+

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     whatsapp_verify_token: Optional[str] =None
     telegram_bot_token: Optional[str] = None
     chat_endpoint_url: str = "http://127.0.0.1:8000/chat"
+    anthropic_api_key: str
 
     # DEV ONLY: bypasses the real verification API with a fake success
     # result, so onboarding can be tested before the verification API
