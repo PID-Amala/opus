@@ -28,6 +28,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Opus Escrow", lifespan=lifespan)
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "Opus Escrow API"}
+
 
 # Shared Gemini sessions
 # WhatsApp -> keyed by phone number
